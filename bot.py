@@ -9,6 +9,7 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 FAL_KEY = os.environ.get('FAL_KEY')
+IMGBB_KEY = os.environ.get('IMGBB_KEY')
 
 if not BOT_TOKEN or not FAL_KEY:
     raise ValueError("❌ Нет токенов! Добавь BOT_TOKEN и FAL_KEY в переменные окружения")
@@ -21,9 +22,8 @@ bot = telebot.TeleBot(BOT_TOKEN)
 def start(message):
     bot.reply_to(message, 
         "👋 Привет! Я бот для видео через FAL AI!\n\n"
-        "📸 Отправь фото — я оживлю его через Kling\n"
-        "🎬 /video текст — видео из текста\n"
-        "💬 Просто напиши — отвечу (скоро)"
+        "📸 **Отправь фото** — я оживлю его через Kling\n"
+        "🎬 **/video текст** — видео из текста"
     )
 
 # ========== ВИДЕО ИЗ ТЕКСТА ==========
@@ -39,7 +39,7 @@ def generate_video(message):
     try:
         # Отправляем задачу в Kling (text-to-video)
         handler = fal_client.submit(
-            "fal-ai/kling-video/v1.6/text-to-video",
+            "fal-ai/kling-video/v1-6/text-to-video",
             arguments={
                 "prompt": prompt
             }
@@ -51,12 +51,13 @@ def generate_video(message):
         bot.delete_message(message.chat.id, msg.message_id)
         
         if result and result.get('video'):
-            bot.send_message(message.chat.id, f"✅ Видео готово!\n{result['video']['url']}")
+            video_url = result['video']['url']
+            bot.send_message(message.chat.id, f"✅ Видео готово!\n{video_url}")
         else:
             bot.send_message(message.chat.id, "❌ Не удалось получить видео")
             
     except Exception as e:
-        bot.edit_message_text(f"❌ Ошибка: {str(e)}", message.chat.id, msg.message_id)
+        bot.edit_message_text(f"❌ Ошибка видео: {str(e)}", message.chat.id, msg.message_id)
 
 # ========== ОЖИВЛЕНИЕ ФОТО ==========
 @bot.message_handler(content_types=['photo'])
@@ -69,26 +70,33 @@ def handle_photo(message):
         photo = bot.download_file(file_info.file_path)
         
         # Сохраняем временно
-        with open('photo.jpg', 'wb') as f:
+        temp_filename = f"temp_{message.from_user.id}_{int(time.time())}.jpg"
+        with open(temp_filename, 'wb') as f:
             f.write(photo)
         
-        # Загружаем фото на временный хостинг (нужен будет ImgBB или аналогичный)
-        # Пока используем простой вариант
-        with open('photo.jpg', 'rb') as f:
+        # Загружаем на ImgBB (нужен ключ)
+        if not IMGBB_KEY:
+            bot.edit_message_text("❌ Нет ключа ImgBB. Добавь IMGBB_KEY в переменные окружения", 
+                                 message.chat.id, msg.message_id)
+            os.remove(temp_filename)
+            return
+        
+        with open(temp_filename, 'rb') as f:
             response = requests.post(
                 "https://api.imgbb.com/1/upload",
-                params={"key": os.environ.get('IMGBB_KEY', '')},  # нужен ключ ImgBB
+                params={"key": IMGBB_KEY},
                 files={"image": f}
             )
         
-        os.remove('photo.jpg')
+        # Удаляем временный файл
+        os.remove(temp_filename)
         
         if response.status_code == 200:
             image_url = response.json()['data']['url']
             
-            # Отправляем в Kling (image-to-video)
+            # Отправляем в Kling (image-to-video) с правильным путем
             handler = fal_client.submit(
-                "fal-ai/kling-video/v1.6/image-to-video",
+                "fal-ai/kling-video/v1-6/image-to-video",
                 arguments={
                     "image_url": image_url,
                     "prompt": "make it move naturally"
@@ -100,20 +108,35 @@ def handle_photo(message):
             bot.delete_message(message.chat.id, msg.message_id)
             
             if result and result.get('video'):
-                bot.send_message(message.chat.id, f"✅ Фото ожило!\n{result['video']['url']}")
+                video_url = result['video']['url']
+                bot.send_message(message.chat.id, f"✅ Фото ожило!\n{video_url}")
             else:
                 bot.send_message(message.chat.id, "❌ Не удалось получить видео")
         else:
-            bot.edit_message_text("❌ Ошибка загрузки фото", message.chat.id, msg.message_id)
+            bot.edit_message_text(f"❌ Ошибка загрузки фото: {response.status_code}", 
+                                 message.chat.id, msg.message_id)
             
     except Exception as e:
         bot.edit_message_text(f"❌ Ошибка: {str(e)}", message.chat.id, msg.message_id)
+        # Пробуем удалить временный файл, если он остался
+        try:
+            os.remove(temp_filename)
+        except:
+            pass
+
+# ========== ОБРАБОТКА ТЕКСТА ==========
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    bot.reply_to(message, "Отправь фото или используй /video текст")
 
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
+    print("=" * 50)
     print("🚀 Бот с FAL AI запускается...")
     print(f"🤖 Bot Token: {'✅' if BOT_TOKEN else '❌'}")
     print(f"🔄 FAL Key: {'✅' if FAL_KEY else '❌'}")
+    print(f"📸 ImgBB Key: {'✅' if IMGBB_KEY else '❌'}")
+    print("=" * 50)
     
     while True:
         try:
